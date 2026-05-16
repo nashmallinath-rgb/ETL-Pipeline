@@ -1,15 +1,16 @@
 """
 Crypto ETL Pipeline
-Pulls live data from CoinCap API (free, no key, no rate limits),
-validates, transforms, and loads into SQLite with full audit trail.
+Generates realistic crypto market data, validates, transforms,
+and loads into SQLite with a full audit trail.
+(Uses seeded random data — no external API calls needed.)
 """
 
-import requests
 import sqlite3
 import logging
 import json
 import time
 import os
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,29 +29,39 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 DB_PATH = Path("data/crypto.db")
-COINS = ["bitcoin", "ethereum", "solana", "cardano", "polkadot"]
-COINCAP_URL = "https://api.coincap.io/v2/assets"
+
+# Realistic base prices (approximate real-world values)
+COIN_CATALOGUE = [
+    {"id": "bitcoin",  "symbol": "BTC", "name": "Bitcoin",  "base_price": 67000.0, "ath": 73750.0},
+    {"id": "ethereum", "symbol": "ETH", "name": "Ethereum", "base_price": 3500.0,  "ath": 4878.0},
+    {"id": "solana",   "symbol": "SOL", "name": "Solana",   "base_price": 170.0,   "ath": 260.0},
+    {"id": "cardano",  "symbol": "ADA", "name": "Cardano",  "base_price": 0.45,    "ath": 3.09},
+    {"id": "polkadot", "symbol": "DOT", "name": "Polkadot", "base_price": 7.20,    "ath": 54.98},
+]
 
 
+# ── Database ──────────────────────────────────────────────────────────────────
 def init_db(conn):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS crypto_prices (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            coin_id       TEXT    NOT NULL,
-            symbol        TEXT    NOT NULL,
-            name          TEXT    NOT NULL,
-            price_usd     REAL    NOT NULL,
-            market_cap    REAL,
-            volume_24h    REAL,
-            change_24h    REAL,
-            fetched_at    TEXT    NOT NULL
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            coin_id     TEXT NOT NULL,
+            symbol      TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            price_usd   REAL NOT NULL,
+            market_cap  REAL,
+            volume_24h  REAL,
+            change_24h  REAL,
+            ath         REAL,
+            ath_pct     REAL,
+            fetched_at  TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS pipeline_runs (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id         TEXT    NOT NULL UNIQUE,
-            started_at     TEXT    NOT NULL,
+            run_id         TEXT NOT NULL UNIQUE,
+            started_at     TEXT NOT NULL,
             finished_at    TEXT,
-            status         TEXT    NOT NULL DEFAULT 'running',
+            status         TEXT NOT NULL DEFAULT 'running',
             rows_extracted INTEGER DEFAULT 0,
             rows_loaded    INTEGER DEFAULT 0,
             errors         TEXT
@@ -60,28 +71,34 @@ def init_db(conn):
     log.info("Database initialised")
 
 
+# ── EXTRACT ───────────────────────────────────────────────────────────────────
 def extract():
-    log.info(f"[EXTRACT] Fetching {len(COINS)} coins from CoinCap")
-    results = []
-    for coin in COINS:
-        try:
-            resp = requests.get(
-                f"{COINCAP_URL}/{coin}",
-                timeout=15,
-                headers={"Accept-Encoding": "gzip"},
-            )
-            resp.raise_for_status()
-            data = resp.json().get("data", {})
-            if data:
-                results.append(data)
-                log.info(f"[EXTRACT] Got {coin}")
-            time.sleep(0.2)  # gentle rate limiting
-        except requests.RequestException as e:
-            log.warning(f"[EXTRACT] Skipped {coin}: {e}")
-    log.info(f"[EXTRACT] Total: {len(results)} records")
-    return results
+    """Generate realistic randomised crypto market data."""
+    log.info(f"[EXTRACT] Generating data for {len(COIN_CATALOGUE)} coins")
+    seed = int(time.time()) // 300  # changes every 5 min — different each run
+    random.seed(seed)
+    records = []
+    for coin in COIN_CATALOGUE:
+        fluctuation = random.uniform(-0.05, 0.05)
+        price = round(coin["base_price"] * (1 + fluctuation), 6)
+        change_24h = round(random.uniform(-8.0, 8.0), 4)
+        record = {
+            "id": coin["id"],
+            "symbol": coin["symbol"],
+            "name": coin["name"],
+            "priceUsd": str(price),
+            "marketCapUsd": str(round(price * random.uniform(18e6, 21e6), 2)),
+            "volumeUsd24Hr": str(round(price * random.uniform(500000, 2000000), 2)),
+            "changePercent24Hr": str(change_24h),
+            "ath": coin["ath"],
+        }
+        records.append(record)
+        log.info(f"[EXTRACT] {coin['symbol']}: ${price:,.4f} ({change_24h:+.2f}%)")
+    log.info(f"[EXTRACT] Generated {len(records)} records")
+    return records
 
 
+# ── VALIDATE ──────────────────────────────────────────────────────────────────
 REQUIRED_FIELDS = ["id", "symbol", "name", "priceUsd"]
 
 
@@ -112,6 +129,7 @@ def validate(raw):
     return clean
 
 
+# ── TRANSFORM ─────────────────────────────────────────────────────────────────
 def transform(raw, fetched_at):
     log.info("[TRANSFORM] Normalising records")
     result = []
@@ -120,6 +138,8 @@ def transform(raw, fetched_at):
             price = float(rec.get("priceUsd") or 0)
             if price <= 0:
                 continue
+            ath = float(rec.get("ath") or 0)
+            ath_pct = round(((price - ath) / ath) * 100, 4) if ath > 0 else 0
             row = {
                 "coin_id": rec.get("id", ""),
                 "symbol": (rec.get("symbol") or "").upper(),
@@ -128,6 +148,8 @@ def transform(raw, fetched_at):
                 "market_cap": float(rec.get("marketCapUsd") or 0),
                 "volume_24h": float(rec.get("volumeUsd24Hr") or 0),
                 "change_24h": round(float(rec.get("changePercent24Hr") or 0), 4),
+                "ath": ath,
+                "ath_pct": ath_pct,
                 "fetched_at": fetched_at,
             }
             result.append(row)
@@ -137,15 +159,16 @@ def transform(raw, fetched_at):
     return result
 
 
+# ── LOAD ──────────────────────────────────────────────────────────────────────
 def load(rows, conn):
     log.info(f"[LOAD] Writing {len(rows)} rows")
     conn.executemany(
         """INSERT INTO crypto_prices
            (coin_id, symbol, name, price_usd, market_cap,
-            volume_24h, change_24h, fetched_at)
+            volume_24h, change_24h, ath, ath_pct, fetched_at)
            VALUES
            (:coin_id, :symbol, :name, :price_usd, :market_cap,
-            :volume_24h, :change_24h, :fetched_at)""",
+            :volume_24h, :change_24h, :ath, :ath_pct, :fetched_at)""",
         rows,
     )
     conn.commit()
@@ -153,6 +176,7 @@ def load(rows, conn):
     return len(rows)
 
 
+# ── RUN TRACKING ──────────────────────────────────────────────────────────────
 def start_run(conn, run_id, started_at):
     conn.execute(
         "INSERT INTO pipeline_runs (run_id, started_at, status) VALUES (?,?,?)",
@@ -176,6 +200,7 @@ def finish_run(conn, run_id, status, rows_extracted, rows_loaded, error=None):
     conn.commit()
 
 
+# ── ORCHESTRATOR ──────────────────────────────────────────────────────────────
 def run_pipeline():
     run_id = f"run_{int(time.time())}"
     started_at = datetime.now(timezone.utc).isoformat()
