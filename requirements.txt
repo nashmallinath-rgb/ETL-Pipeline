@@ -1,0 +1,6 @@
+requests==2.31.0
+pandas==2.2.2
+SQLAlchemy==2.0.30
+pytest==8.2.0
+pytest-cov==5.0.0
+flake8==7.0.0

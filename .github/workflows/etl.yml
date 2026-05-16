@@ -1,0 +1,78 @@
+name: Crypto ETL Pipeline
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # every 30 minutes
+  workflow_dispatch:           # manual trigger from GitHub UI
+  push:
+    branches: [main]
+
+jobs:
+  # ── Job 1: CI — lint + test ─────────────────────────────────────────────────
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint (flake8)
+        run: flake8 src/ tests/ --max-line-length=100
+
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ -v \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=term-missing
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
+  # ── Job 2: Run the ETL ──────────────────────────────────────────────────────
+  run-etl:
+    name: Execute ETL Pipeline
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create directories
+        run: mkdir -p data logs
+
+      - name: Run pipeline
+        run: python src/pipeline.py
+
+      - name: Upload pipeline artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pipeline-output-${{ github.run_number }}
+          path: |
+            data/crypto.db
+            logs/pipeline.log
+          retention-days: 7
+
+      - name: Show pipeline log
+        if: always()
+        run: cat logs/pipeline.log || echo "No log file found"
