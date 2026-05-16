@@ -89,6 +89,7 @@ def extract(run_id: str) -> list[dict]:
 # ── VALIDATE ──────────────────────────────────────────────────────────────────
 REQUIRED_FIELDS = ["id", "symbol", "name", "current_price", "market_cap"]
 
+
 def validate(raw: list[dict]) -> list[dict]:
     log.info("[VALIDATE] Running data quality checks")
     clean = []
