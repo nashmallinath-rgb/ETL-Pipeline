@@ -13,15 +13,19 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import os
+
 # ── Logging ──────────────────────────────────────────────────────────────────
+Path("logs").mkdir(exist_ok=True)
+handlers = [logging.StreamHandler()]
+if not os.getenv("CI"):
+    handlers.append(logging.FileHandler("logs/pipeline.log"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("logs/pipeline.log"),
-    ],
+    handlers=handlers,
 )
 log = logging.getLogger(__name__)
 
