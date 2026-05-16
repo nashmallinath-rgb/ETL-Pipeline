@@ -103,7 +103,7 @@ def validate(raw: list[dict]) -> list[dict]:
         for field in REQUIRED_FIELDS:
             if rec.get(field) is None:
                 errors.append(f"missing {field}")
-        if rec.get("current_price", 0) <= 0:
+        if (rec.get("current_price") or 0) <= 0:
             errors.append("price <= 0")
         if errors:
             log.warning(f"[VALIDATE] ✗ Rejected {rec.get('id','?')}: {errors}")
