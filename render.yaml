@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: etl-pipeline
+    runtime: python
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python src/pipeline.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
