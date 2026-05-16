@@ -2,12 +2,10 @@
 import sqlite3
 import sys
 import pytest
-import pandas as pd
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from pipeline import validate, transform, init_db, load  # noqa: E402
-
 
 MOCK_RAW = [
     {
@@ -64,30 +62,35 @@ class TestValidate:
 
 
 class TestTransform:
-    def test_output_columns(self):
-        df = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
-        expected = {"coin_id", "symbol", "name", "price_usd", "market_cap",
-                    "volume_24h", "change_24h", "ath", "ath_pct", "circulating", "fetched_at"}
-        assert expected.issubset(set(df.columns))
+    def test_output_keys(self):
+        rows = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
+        expected = {
+            "coin_id", "symbol", "name", "price_usd", "market_cap",
+            "volume_24h", "change_24h", "ath", "ath_pct",
+            "circulating", "fetched_at"
+        }
+        assert expected.issubset(set(rows[0].keys()))
 
     def test_symbol_uppercased(self):
-        df = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
-        assert all(df["symbol"].str.isupper())
+        rows = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
+        assert all(r["symbol"].isupper() for r in rows)
 
-    def test_price_is_numeric(self):
-        df = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
-        assert pd.api.types.is_float_dtype(df["price_usd"])
+    def test_price_is_float(self):
+        rows = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
+        assert isinstance(rows[0]["price_usd"], float)
 
     def test_row_count(self):
-        df = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
-        assert len(df) == 2
+        rows = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
+        assert len(rows) == 2
 
 
 class TestDatabase:
     def test_init_creates_tables(self):
         conn = sqlite3.connect(":memory:")
         init_db(conn)
-        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
         names = {r[0] for r in tables}
         assert "crypto_prices" in names
         assert "pipeline_runs" in names
@@ -96,9 +99,11 @@ class TestDatabase:
     def test_load_inserts_rows(self):
         conn = sqlite3.connect(":memory:")
         init_db(conn)
-        df = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
-        rows = load(df, conn)
-        assert rows == 2
-        count = conn.execute("SELECT COUNT(*) FROM crypto_prices").fetchone()[0]
+        rows = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
+        count = load(rows, conn)
         assert count == 2
+        db_count = conn.execute(
+            "SELECT COUNT(*) FROM crypto_prices"
+        ).fetchone()[0]
+        assert db_count == 2
         conn.close()
