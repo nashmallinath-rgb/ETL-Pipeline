@@ -1,8 +1,7 @@
 """
 Crypto ETL Pipeline
-Pulls live data from CoinGecko (no API key needed),
+Pulls live data from CoinCap API (free, no key, no rate limits),
 validates, transforms, and loads into SQLite with full audit trail.
-Pure stdlib — no pandas/numpy compile issues.
 """
 
 import requests
@@ -30,7 +29,7 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path("data/crypto.db")
 COINS = ["bitcoin", "ethereum", "solana", "cardano", "polkadot"]
-COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
+COINCAP_URL = "https://api.coincap.io/v2/assets"
 
 
 def init_db(conn):
@@ -44,9 +43,6 @@ def init_db(conn):
             market_cap    REAL,
             volume_24h    REAL,
             change_24h    REAL,
-            ath           REAL,
-            ath_pct       REAL,
-            circulating   REAL,
             fetched_at    TEXT    NOT NULL
         );
         CREATE TABLE IF NOT EXISTS pipeline_runs (
@@ -65,23 +61,28 @@ def init_db(conn):
 
 
 def extract():
-    log.info(f"[EXTRACT] Fetching {len(COINS)} coins from CoinGecko")
-    params = {
-        "vs_currency": "usd",
-        "ids": ",".join(COINS),
-        "order": "market_cap_desc",
-        "per_page": len(COINS),
-        "page": 1,
-        "sparkline": False,
-    }
-    resp = requests.get(COINGECKO_URL, params=params, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    log.info(f"[EXTRACT] Got {len(data)} records")
-    return data
+    log.info(f"[EXTRACT] Fetching {len(COINS)} coins from CoinCap")
+    results = []
+    for coin in COINS:
+        try:
+            resp = requests.get(
+                f"{COINCAP_URL}/{coin}",
+                timeout=15,
+                headers={"Accept-Encoding": "gzip"},
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            if data:
+                results.append(data)
+                log.info(f"[EXTRACT] Got {coin}")
+            time.sleep(0.2)  # gentle rate limiting
+        except requests.RequestException as e:
+            log.warning(f"[EXTRACT] Skipped {coin}: {e}")
+    log.info(f"[EXTRACT] Total: {len(results)} records")
+    return results
 
 
-REQUIRED_FIELDS = ["id", "symbol", "name", "current_price", "market_cap"]
+REQUIRED_FIELDS = ["id", "symbol", "name", "priceUsd"]
 
 
 def validate(raw):
@@ -93,10 +94,13 @@ def validate(raw):
         for field in REQUIRED_FIELDS:
             if rec.get(field) is None:
                 errors.append(f"missing {field}")
-        price = rec.get("current_price")
-        if price is None or price <= 0:
-            if "missing current_price" not in errors:
-                errors.append("price <= 0")
+        price = rec.get("priceUsd")
+        try:
+            if price is None or float(price) <= 0:
+                if "missing priceUsd" not in errors:
+                    errors.append("price <= 0")
+        except (ValueError, TypeError):
+            errors.append("invalid price format")
         if errors:
             log.warning(f"[VALIDATE] Rejected {rec.get('id', '?')}: {errors}")
             rejected += 1
@@ -112,21 +116,23 @@ def transform(raw, fetched_at):
     log.info("[TRANSFORM] Normalising records")
     result = []
     for rec in raw:
-        row = {
-            "coin_id": rec.get("id", ""),
-            "symbol": (rec.get("symbol") or "").upper(),
-            "name": rec.get("name", ""),
-            "price_usd": float(rec.get("current_price") or 0),
-            "market_cap": float(rec.get("market_cap") or 0),
-            "volume_24h": float(rec.get("total_volume") or 0),
-            "change_24h": round(float(rec.get("price_change_percentage_24h") or 0), 4),
-            "ath": float(rec.get("ath") or 0),
-            "ath_pct": float(rec.get("ath_change_percentage") or 0),
-            "circulating": float(rec.get("circulating_supply") or 0),
-            "fetched_at": fetched_at,
-        }
-        if row["price_usd"] > 0:
+        try:
+            price = float(rec.get("priceUsd") or 0)
+            if price <= 0:
+                continue
+            row = {
+                "coin_id": rec.get("id", ""),
+                "symbol": (rec.get("symbol") or "").upper(),
+                "name": rec.get("name", ""),
+                "price_usd": price,
+                "market_cap": float(rec.get("marketCapUsd") or 0),
+                "volume_24h": float(rec.get("volumeUsd24Hr") or 0),
+                "change_24h": round(float(rec.get("changePercent24Hr") or 0), 4),
+                "fetched_at": fetched_at,
+            }
             result.append(row)
+        except (ValueError, TypeError) as e:
+            log.warning(f"[TRANSFORM] Skipped {rec.get('id', '?')}: {e}")
     log.info(f"[TRANSFORM] {len(result)} rows ready")
     return result
 
@@ -135,11 +141,11 @@ def load(rows, conn):
     log.info(f"[LOAD] Writing {len(rows)} rows")
     conn.executemany(
         """INSERT INTO crypto_prices
-           (coin_id, symbol, name, price_usd, market_cap, volume_24h,
-            change_24h, ath, ath_pct, circulating, fetched_at)
+           (coin_id, symbol, name, price_usd, market_cap,
+            volume_24h, change_24h, fetched_at)
            VALUES
-           (:coin_id, :symbol, :name, :price_usd, :market_cap, :volume_24h,
-            :change_24h, :ath, :ath_pct, :circulating, :fetched_at)""",
+           (:coin_id, :symbol, :name, :price_usd, :market_cap,
+            :volume_24h, :change_24h, :fetched_at)""",
         rows,
     )
     conn.commit()
