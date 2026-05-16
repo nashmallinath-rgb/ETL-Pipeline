@@ -10,27 +10,21 @@ from pipeline import validate, transform, init_db, load  # noqa: E402
 MOCK_RAW = [
     {
         "id": "bitcoin",
-        "symbol": "btc",
+        "symbol": "BTC",
         "name": "Bitcoin",
-        "current_price": 67000.5,
-        "market_cap": 1_300_000_000_000,
-        "total_volume": 25_000_000_000,
-        "price_change_percentage_24h": 1.23,
-        "ath": 73750.0,
-        "ath_change_percentage": -9.15,
-        "circulating_supply": 19_700_000,
+        "priceUsd": "67000.50",
+        "marketCapUsd": "1300000000000",
+        "volumeUsd24Hr": "25000000000",
+        "changePercent24Hr": "1.23",
     },
     {
         "id": "ethereum",
-        "symbol": "eth",
+        "symbol": "ETH",
         "name": "Ethereum",
-        "current_price": 3500.0,
-        "market_cap": 420_000_000_000,
-        "total_volume": 15_000_000_000,
-        "price_change_percentage_24h": -0.5,
-        "ath": 4878.0,
-        "ath_change_percentage": -28.3,
-        "circulating_supply": 120_000_000,
+        "priceUsd": "3500.00",
+        "marketCapUsd": "420000000000",
+        "volumeUsd24Hr": "15000000000",
+        "changePercent24Hr": "-0.5",
     },
 ]
 
@@ -41,33 +35,27 @@ class TestValidate:
         assert len(result) == 2
 
     def test_rejects_missing_price(self):
-        bad = [{
-            "id": "bad", "symbol": "b", "name": "Bad",
-            "current_price": None, "market_cap": 100
-        }]
-        result = validate(bad)
-        assert len(result) == 0
+        bad = {"id": "bad", "symbol": "B", "name": "Bad", "priceUsd": None}
+        result = validate([bad, MOCK_RAW[1]])
+        assert len(result) == 1
+        assert result[0]["id"] == "ethereum"
 
     def test_rejects_zero_price(self):
-        bad = [{**MOCK_RAW[0], "current_price": 0}]
-        result = validate(bad)
-        assert len(result) == 0
+        bad = {**MOCK_RAW[0], "priceUsd": "0"}
+        result = validate([bad, MOCK_RAW[1]])
+        assert len(result) == 1
 
     def test_raises_when_all_rejected(self):
         with pytest.raises(ValueError, match="All records failed"):
-            validate([{
-                "id": "x", "symbol": None, "name": None,
-                "current_price": None, "market_cap": None
-            }])
+            validate([{"id": "x", "symbol": None, "name": None, "priceUsd": None}])
 
 
 class TestTransform:
     def test_output_keys(self):
         rows = transform(MOCK_RAW, "2024-01-01T00:00:00+00:00")
         expected = {
-            "coin_id", "symbol", "name", "price_usd", "market_cap",
-            "volume_24h", "change_24h", "ath", "ath_pct",
-            "circulating", "fetched_at"
+            "coin_id", "symbol", "name", "price_usd",
+            "market_cap", "volume_24h", "change_24h", "fetched_at"
         }
         assert expected.issubset(set(rows[0].keys()))
 
