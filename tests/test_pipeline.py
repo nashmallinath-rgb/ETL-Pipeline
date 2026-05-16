@@ -1,13 +1,12 @@
 """Tests for the crypto ETL pipeline."""
-import pytest
 import sqlite3
-import pandas as pd
-from unittest.mock import patch, MagicMock
 import sys
+import pytest
+import pandas as pd
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from pipeline import validate, transform, init_db, load
+from pipeline import validate, transform, init_db, load  # noqa: E402
 
 
 MOCK_RAW = [
@@ -44,7 +43,10 @@ class TestValidate:
         assert len(result) == 2
 
     def test_rejects_missing_price(self):
-        bad = [{"id": "bad", "symbol": "b", "name": "Bad", "current_price": None, "market_cap": 100}]
+        bad = [{
+            "id": "bad", "symbol": "b", "name": "Bad",
+            "current_price": None, "market_cap": 100
+        }]
         result = validate(bad)
         assert len(result) == 0
 
@@ -55,7 +57,10 @@ class TestValidate:
 
     def test_raises_when_all_rejected(self):
         with pytest.raises(ValueError, match="All records failed"):
-            validate([{"id": "x", "symbol": None, "name": None, "current_price": None, "market_cap": None}])
+            validate([{
+                "id": "x", "symbol": None, "name": None,
+                "current_price": None, "market_cap": None
+            }])
 
 
 class TestTransform:
